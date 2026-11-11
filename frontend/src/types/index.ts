@@ -58,6 +58,7 @@ export interface PurchaseMandate {
   allow_add_ons: boolean;
   user_restrictions?: string[];
   category?: string | null;
+  search_query?: string | null;
   min_ram_gb?: number | null;
   min_storage_gb?: number | null;
   storage_type?: string | null;

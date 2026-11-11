@@ -63,10 +63,33 @@ class ProductDiscoveryService:
         if not mkt_id:
             mkt_id = "demo" if catalog_mode == "demo" else ("external" if catalog_mode == "external" else "amazon")
 
-        search_query = (query or "").strip()
-        if not search_query and mandate.user_restrictions:
-            search_query = mandate.user_restrictions[0]
-        if not search_query:
+        PROHIBITED_QUERY_TERMS = {
+            "brand new only", "brand new", "brand-new", "new only", "new", "refurbished",
+            "used", "verified seller", "verified seller only", "verified sellers",
+            "no refurbished", "no accessories", "no refurbished products", "no add-ons",
+            "in stock only", "in-stock only", "in stock", "verified", "accessories",
+        }
+
+        raw_query = (query or "").strip()
+        is_prohibited = raw_query.lower() in PROHIBITED_QUERY_TERMS
+
+        if raw_query and not is_prohibited:
+            search_query = raw_query
+        elif getattr(mandate, "search_query", None) and mandate.search_query.strip().lower() not in PROHIBITED_QUERY_TERMS:
+            search_query = mandate.search_query.strip()
+        elif getattr(mandate, "category", None) and mandate.category.strip().lower() not in PROHIBITED_QUERY_TERMS:
+            search_query = mandate.category.strip()
+        elif getattr(mandate, "brand_preference", None) and getattr(mandate, "category", None):
+            search_query = f"{mandate.brand_preference} {mandate.category}".strip()
+        elif mandate.user_restrictions:
+            prod_restriction = None
+            for r in mandate.user_restrictions:
+                r_lower = r.lower()
+                if r_lower not in PROHIBITED_QUERY_TERMS and any(p in r_lower for p in ("laptop", "notebook", "keyboard", "mouse", "monitor", "headphone")):
+                    prod_restriction = r
+                    break
+            search_query = prod_restriction or "laptop"
+        else:
             search_query = "laptop"
 
         # -------------------------------------------------------------

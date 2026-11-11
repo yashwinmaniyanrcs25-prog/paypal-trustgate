@@ -14,6 +14,7 @@ CRITICAL INVARIANTS:
 
 import json
 import logging
+import re
 import httpx
 from typing import Dict, Any, Optional
 
@@ -31,6 +32,9 @@ OUTPUT JSON SCHEMA:
   "max_amount": float or null,
   "currency": string (3-letter ISO code: "USD", "INR", "EUR", "GBP", etc.),
   "category": string or null (e.g. "laptop", "keyboard", "mouse"),
+  "search_query": string or null (e.g. "laptop", "keyboard", "wireless mouse"),
+  "condition": string or null ("NEW", "USED", "REFURBISHED"),
+  "allowed_conditions": list of strings (only "new", "used", "refurbished"),
   "min_ram_gb": integer or null (e.g. 16, 8, 32),
   "min_storage_gb": integer or null (e.g. 512, 256, 1024),
   "storage_type": string or null (e.g. "SSD", "NVMe", "HDD"),
@@ -40,8 +44,9 @@ OUTPUT JSON SCHEMA:
   "brand_preference": string or null,
   "model_preference": string or null,
   "marketplace": string or null (e.g. "amazon.in", "amazon.com"),
-  "allowed_conditions": list of strings (only "new", "used", "refurbished"),
+  "verified_seller_required": boolean,
   "require_merchant_verification": boolean,
+  "allow_accessories": boolean,
   "allow_add_ons": boolean,
   "in_stock_required": boolean,
   "user_restrictions": list of strings,
@@ -63,35 +68,44 @@ RULES:
      "max_amount": null.
    - DO NOT INVENT A BUDGET IF THE USER DID NOT SPECIFY ONE.
 
-2. SPECIFICATIONS (for laptops & electronics):
+2. CATEGORY & SEARCH QUERY SEPARATION:
+   - "category": Extract ONLY the physical product category noun (e.g. "laptop", "keyboard", "mouse", "headphones", "monitor").
+     * CRITICAL: Do NOT include condition words ("new", "brand-new", "refurbished") or restrictions in category!
+     * For "I need a brand-new laptop...", category MUST be "laptop".
+   - "search_query": The primary catalog search query term (e.g. "laptop", "wireless mouse", "Keychron K2").
+     * NEVER use condition text ("brand new only", "new"), seller restrictions ("verified seller"), or prohibitions ("no accessories", "no refurbished") as the search_query or category.
+     * Keep category and search_query focused on the item being sought (e.g. "laptop").
+
+3. SPECIFICATIONS (for laptops & electronics):
    - Extract min_ram_gb (e.g., "16GB RAM" -> 16, "at least 8GB" -> 8).
    - Extract min_storage_gb (e.g., "512GB SSD" -> 512, "1TB" -> 1024).
    - Extract storage_type (e.g., "SSD", "NVMe").
    - Extract processor_requirement (e.g., "Intel Core i5 or AMD Ryzen 5 or better").
-   - Extract category (e.g., "laptop").
    - Extract marketplace if specified (e.g. "Amazon India" -> "amazon.in", "Amazon US" -> "amazon.com").
    - in_stock_required defaults to true.
 
-3. ALLOWED CONDITIONS:
-   - "new", "brand-new" -> ["new"]
-   - "no refurbished" -> ["new"]
-   - "used or refurbished" -> ["used", "refurbished"]
-   - If no condition is mentioned, default to ["new"].
+4. ALLOWED CONDITIONS:
+   - "new", "brand-new", "brand new" -> condition: "NEW", allowed_conditions: ["new"]
+   - "no refurbished" -> condition: "NEW", allowed_conditions: ["new"]
+   - "used or refurbished" -> condition: "USED", allowed_conditions: ["used", "refurbished"]
+   - Default condition: "NEW", allowed_conditions: ["new"].
+   - Condition belongs ONLY in condition / allowed_conditions, NEVER in category or search_query.
 
-4. MERCHANT VERIFICATION:
-   - If user asks for "verified seller", "only verified merchant", "official store", set require_merchant_verification: true.
+5. MERCHANT VERIFICATION:
+   - If user asks for "verified seller", "verified sellers", "only verified merchant", "official store", set verified_seller_required: true, require_merchant_verification: true.
    - Default is true for security.
 
-5. ADD-ONS & ACCESSORIES:
-   - "no accessories", "no add-ons", "no bundle items", "without warranty upsells", "no extended warranties or subscriptions" -> allow_add_ons: false.
-   - If user explicitly permits add-ons -> allow_add_ons: true.
+6. ADD-ONS & ACCESSORIES:
+   - "no accessories", "no add-ons", "no bundle items", "without warranty upsells", "no extended warranties or subscriptions" -> allow_accessories: false, allow_add_ons: false.
+   - If user explicitly permits add-ons -> allow_accessories: true, allow_add_ons: true.
    - Default is false.
+   - Do NOT put "no accessories" into category or search_query.
 
-6. USER RESTRICTIONS:
-   - Extract key constraints explicitly mentioned by user (e.g. "new laptop only", "Amazon India only", "min 16GB RAM", "verified seller only").
-   - DO NOT invent constraints the user did not specify.
+7. USER RESTRICTIONS:
+   - Extract contextual constraints explicitly mentioned by user (e.g. "Amazon India only", "verified seller only").
+   - Prohibitions and conditions (like "brand-new", "no refurbished", "no accessories") are already handled by allowed_conditions, require_merchant_verification, and allow_add_ons.
 
-7. ABSOLUTE SECURITY INVARIANT:
+8. ABSOLUTE SECURITY INVARIANT:
    - Output ONLY structured intent bounds. You have zero payment execution authority.
 
 Return strictly valid JSON matching the schema above.
@@ -272,7 +286,8 @@ class IntentInterpreterService:
 
         # Normalize currency (handle ₹ symbol mapping if not already converted)
         raw_currency = str(parsed_data.get("currency", "USD")).strip().upper()
-        if raw_currency == "₹" or "RUPEE" in raw_currency or "INR" in raw_currency:
+        prompt_lower = cleaned_prompt.lower()
+        if raw_currency == "₹" or "RUPEE" in raw_currency or "INR" in raw_currency or "₹" in cleaned_prompt or "amazon india" in prompt_lower:
             currency_code = "INR"
         elif raw_currency == "$" or "DOLLAR" in raw_currency or "USD" in raw_currency:
             currency_code = "USD"
@@ -283,33 +298,142 @@ class IntentInterpreterService:
         else:
             currency_code = raw_currency if len(raw_currency) == 3 else "USD"
 
+        # Terms that must NEVER be used as category or primary search query
+        PROHIBITED_QUERY_TERMS = {
+            "brand new only", "brand new", "brand-new", "new only", "new", "refurbished",
+            "used", "verified seller", "verified seller only", "verified sellers",
+            "no refurbished", "no accessories", "no refurbished products", "no add-ons",
+            "in stock only", "in-stock only", "in stock", "verified", "accessories",
+        }
+
+        # 1. Category extraction & sanitization
+        raw_cat = str(parsed_data.get("category") or "").strip()
+        clean_cat = raw_cat
+        for prefix in ("brand-new", "brand new", "brand new only", "new only", "new"):
+            if clean_cat.lower().startswith(prefix):
+                clean_cat = clean_cat[len(prefix):].strip()
+        if not clean_cat or clean_cat.lower() in PROHIBITED_QUERY_TERMS:
+            # Infer from user prompt
+            if any(lp in prompt_lower for lp in ("laptop", "notebook", "ultrabook", "macbook", "chromebook")):
+                clean_cat = "laptop"
+            elif "keyboard" in prompt_lower or "keychron" in prompt_lower:
+                clean_cat = "keyboard"
+            elif "mouse" in prompt_lower or "mice" in prompt_lower:
+                clean_cat = "mouse"
+            elif "headphone" in prompt_lower or "headset" in prompt_lower:
+                clean_cat = "headphones"
+            elif "monitor" in prompt_lower:
+                clean_cat = "monitor"
+            else:
+                clean_cat = raw_cat or "laptop"
+
+        # 2. Search query extraction & sanitization
+        raw_query = str(parsed_data.get("search_query") or "").strip()
+        clean_query = raw_query
+        for prefix in ("brand-new", "brand new", "brand new only", "new only", "new"):
+            if clean_query.lower().startswith(prefix):
+                clean_query = clean_query[len(prefix):].strip()
+        if not clean_query or clean_query.lower() in PROHIBITED_QUERY_TERMS:
+            clean_query = clean_cat or "laptop"
+
+        # 3. Allowed conditions
+        raw_conds = parsed_data.get("allowed_conditions")
+        if not raw_conds and parsed_data.get("condition"):
+            raw_conds = [str(parsed_data.get("condition")).lower()]
+        if not raw_conds:
+            raw_conds = ["new"]
+        if "no refurbished" in prompt_lower or "brand-new" in prompt_lower or "brand new" in prompt_lower or "new" in prompt_lower:
+            raw_conds = ["new"]
+
+        # 4. Merchant verification requirement
+        merchant_ver = parsed_data.get("require_merchant_verification")
+        if merchant_ver is None:
+            merchant_ver = parsed_data.get("verified_seller_required")
+        if merchant_ver is None:
+            merchant_ver = ("verified seller" in prompt_lower or "verified merchant" in prompt_lower or "verified sellers" in prompt_lower)
+        merchant_ver = bool(merchant_ver) if merchant_ver is not None else True
+
+        # 5. Add-ons & accessories allowance
+        allow_add_ons = parsed_data.get("allow_add_ons")
+        if allow_add_ons is None:
+            allow_add_ons = parsed_data.get("allow_accessories")
+        if allow_add_ons is None or ("no accessories" in prompt_lower or "no add-ons" in prompt_lower):
+            allow_add_ons = False
+        else:
+            allow_add_ons = bool(allow_add_ons)
+
+        # 6. Hardware specifications extraction with fallback regex
+        raw_ram = parsed_data.get("min_ram_gb")
+        min_ram_gb = int(raw_ram) if raw_ram is not None and str(raw_ram).isdigit() else None
+        if min_ram_gb is None:
+            ram_match = re.search(r'(\d+)\s*gb\s*ram', prompt_lower)
+            if ram_match:
+                min_ram_gb = int(ram_match.group(1))
+
+        raw_storage = parsed_data.get("min_storage_gb")
+        min_storage_gb = int(raw_storage) if raw_storage is not None and str(raw_storage).isdigit() else None
+        if min_storage_gb is None:
+            st_match = re.search(r'(\d+)\s*(?:gb|tb)\s*(?:ssd|nvme|storage)?', prompt_lower)
+            if st_match:
+                val = int(st_match.group(1))
+                if "tb" in st_match.group(0):
+                    val *= 1024
+                min_storage_gb = val
+
+        storage_type = parsed_data.get("storage_type")
+        if not storage_type:
+            if "nvme" in prompt_lower:
+                storage_type = "NVMe"
+            elif "ssd" in prompt_lower:
+                storage_type = "SSD"
+
+        proc_req = parsed_data.get("processor_requirement")
+        if not proc_req:
+            if "core i5 or ryzen 5" in prompt_lower or "i5 or ryzen 5" in prompt_lower:
+                proc_req = "Intel Core i5 or AMD Ryzen 5 or better"
+            elif "core i5" in prompt_lower or "i5" in prompt_lower:
+                proc_req = "Intel Core i5 or better"
+            elif "core i7" in prompt_lower or "i7" in prompt_lower:
+                proc_req = "Intel Core i7 or better"
+
+        mkt = parsed_data.get("marketplace")
+        if not mkt:
+            if "amazon india" in prompt_lower or "amazon.in" in prompt_lower:
+                mkt = "amazon.in"
+            elif "amazon us" in prompt_lower or "amazon.com" in prompt_lower:
+                mkt = "amazon.com"
+
+        # 7. Clean user restrictions
+        raw_restrictions = parsed_data.get("user_restrictions", [])
+        user_restrictions = []
+        if isinstance(raw_restrictions, list):
+            for r in raw_restrictions:
+                r_clean = str(r).strip()
+                r_lower = r_clean.lower()
+                # Exclude redundant condition/addon strings that cause query confusion
+                if r_lower in ("brand new only", "brand-new only", "new only", "new condition", "no refurbished", "no accessories"):
+                    continue
+                user_restrictions.append(r_clean)
+
         try:
-            # Parse integer specifications safely
-            raw_ram = parsed_data.get("min_ram_gb")
-            min_ram_gb = int(raw_ram) if raw_ram is not None and str(raw_ram).isdigit() else None
-
-            raw_storage = parsed_data.get("min_storage_gb")
-            min_storage_gb = int(raw_storage) if raw_storage is not None and str(raw_storage).isdigit() else None
-
             mandate = PurchaseMandate(
                 max_amount=float(max_amount),
                 currency=currency_code,
-                allowed_conditions=parsed_data.get("allowed_conditions", ["new"]),
-                require_merchant_verification=bool(
-                    parsed_data.get("require_merchant_verification", True)
-                ),
-                allow_add_ons=bool(parsed_data.get("allow_add_ons", False)),
-                user_restrictions=parsed_data.get("user_restrictions", []),
-                category=parsed_data.get("category"),
+                allowed_conditions=raw_conds,
+                require_merchant_verification=merchant_ver,
+                allow_add_ons=allow_add_ons,
+                user_restrictions=user_restrictions,
+                category=clean_cat,
+                search_query=clean_query,
                 min_ram_gb=min_ram_gb,
                 min_storage_gb=min_storage_gb,
-                storage_type=parsed_data.get("storage_type"),
-                processor_requirement=parsed_data.get("processor_requirement"),
+                storage_type=storage_type,
+                processor_requirement=proc_req,
                 gpu_requirement=parsed_data.get("gpu_requirement"),
                 display_size=parsed_data.get("display_size"),
                 brand_preference=parsed_data.get("brand_preference"),
                 model_preference=parsed_data.get("model_preference"),
-                marketplace=parsed_data.get("marketplace"),
+                marketplace=mkt,
                 in_stock_required=bool(parsed_data.get("in_stock_required", True)),
             )
         except Exception as val_err:

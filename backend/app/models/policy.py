@@ -73,6 +73,10 @@ class PurchaseMandate(BaseModel):
         default=None,
         description="Mandated product category (e.g. 'laptop')",
     )
+    search_query: Optional[str] = Field(
+        default=None,
+        description="Inferred product search query (e.g. 'laptop')",
+    )
     min_ram_gb: Optional[int] = Field(
         default=None,
         description="Minimum RAM capacity in gigabytes (e.g. 16)",
@@ -114,6 +118,18 @@ class PurchaseMandate(BaseModel):
         description="Whether product must be in stock / available for purchase",
     )
 
+    @property
+    def condition(self) -> str:
+        return self.allowed_conditions[0] if self.allowed_conditions else "new"
+
+    @property
+    def verified_seller_required(self) -> bool:
+        return self.require_merchant_verification
+
+    @property
+    def allow_accessories(self) -> bool:
+        return self.allow_add_ons
+
     @model_validator(mode="before")
     @classmethod
     def remap_aliases(cls, data: Any) -> Any:
@@ -130,6 +146,9 @@ class PurchaseMandate(BaseModel):
             # remap condition -> allowed_conditions
             if "condition" in data and "allowed_conditions" not in data:
                 data["allowed_conditions"] = [data["condition"]]
+            # remap query -> search_query if search_query not present
+            if "query" in data and "search_query" not in data:
+                data["search_query"] = data["query"]
         return data
 
     @field_validator("currency", mode="before")

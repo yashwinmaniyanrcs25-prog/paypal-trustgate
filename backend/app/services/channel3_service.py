@@ -223,7 +223,13 @@ class Channel3Service:
 
         search_url = f"{settings.get_channel3_base_url()}/search"
         clean_query = (query or "").strip()
-        if not clean_query:
+        PROHIBITED_CHANNEL3_QUERY_TERMS = {
+            "brand new only", "brand new", "brand-new", "new only", "new", "refurbished",
+            "used", "verified seller", "verified seller only", "verified sellers",
+            "no refurbished", "no accessories", "no refurbished products", "no add-ons",
+            "in stock only", "in-stock only", "in stock",
+        }
+        if not clean_query or clean_query.lower() in PROHIBITED_CHANNEL3_QUERY_TERMS:
             clean_query = "laptop"
 
         payload: Dict[str, Any] = {

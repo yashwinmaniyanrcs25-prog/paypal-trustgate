@@ -278,3 +278,85 @@ def test_user_edited_mandate_evaluates_in_policy_engine():
     assert evaluation.mandate_summary["max_amount"] == 65000.0
     assert evaluation.mandate_summary["currency"] == "INR"
     assert evaluation.transaction_summary["final_total"] == 62000.0
+
+
+@pytest.mark.asyncio
+async def test_full_user_laptop_request_intent_extraction_field_separation():
+    """Verify exact field separation for the user request:
+    'I need a brand-new laptop under ₹60,000 with at least 16GB RAM, 512GB SSD,
+    Intel Core i5 or Ryzen 5 or better. Amazon India only. Verified sellers.
+    No refurbished products or accessories.'
+    """
+    mock_payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "max_amount": 60000.0,
+                            "currency": "INR",
+                            "category": "laptop",
+                            "search_query": "laptop",
+                            "condition": "NEW",
+                            "allowed_conditions": ["new"],
+                            "min_ram_gb": 16,
+                            "min_storage_gb": 512,
+                            "storage_type": "SSD",
+                            "processor_requirement": "Intel Core i5 or AMD Ryzen 5 or better",
+                            "marketplace": "amazon.in",
+                            "verified_seller_required": True,
+                            "require_merchant_verification": True,
+                            "allow_accessories": False,
+                            "allow_add_ons": False,
+                            "in_stock_required": True,
+                            "user_restrictions": ["Amazon India only", "verified seller only"],
+                            "needs_clarification": False,
+                            "clarification_prompt": None,
+                            "extracted_intent_summary": "Brand-new laptop under INR 60,000 on Amazon India, min 16GB RAM, 512GB SSD, Core i5/Ryzen 5+, verified sellers only, no accessories.",
+                        }
+                    )
+                }
+            }
+        ]
+    }
+
+    mock_response = httpx.Response(
+        status_code=200,
+        content=json.dumps(mock_payload).encode(),
+        request=httpx.Request("POST", GROQ_ENDPOINT),
+    )
+
+    with patch.object(_SettingsClass, "get_ai_api_key", autospec=True, return_value="gsk_test_key_12345"):
+        with patch.object(_SettingsClass, "get_ai_model", autospec=True, return_value="openai/gpt-oss-120b"):
+            with patch.object(_SettingsClass, "get_ai_base_url", autospec=True, return_value="https://api.groq.com/openai/v1"):
+                with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response):
+                    prompt = (
+                        "I need a brand-new laptop under ₹60,000 with at least 16GB RAM, 512GB SSD, "
+                        "Intel Core i5 or Ryzen 5 or better. Amazon India only. Verified sellers. "
+                        "No refurbished products or accessories."
+                    )
+                    res = await intent_interpreter_service.interpret_intent(prompt)
+
+                    assert res.success is True
+                    assert res.mandate is not None
+                    m = res.mandate
+
+                    # Field separation assertions
+                    assert m.category == "laptop"
+                    assert m.search_query == "laptop"
+                    assert m.condition.lower() == "new"
+                    assert m.allowed_conditions == ["new"]
+                    assert m.min_ram_gb == 16
+                    assert m.min_storage_gb == 512
+                    assert m.storage_type == "SSD"
+                    assert "Intel Core i5" in m.processor_requirement or "Ryzen 5" in m.processor_requirement
+                    assert m.marketplace == "amazon.in"
+                    assert m.currency == "INR"
+                    assert m.max_amount == 60000.0
+                    assert m.verified_seller_required is True
+                    assert m.allow_accessories is False
+
+                    # Prohibited search queries must never be present
+                    assert "brand new only" not in m.user_restrictions
+                    assert m.search_query != "brand new only"
+

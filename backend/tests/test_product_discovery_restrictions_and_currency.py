@@ -263,3 +263,104 @@ class TestProductDiscoveryApiEndpoint:
         assert data["query"] == "wireless mouse"
         assert data["compliant_count"] == 0
         assert data["blocked_count"] == data["total_count"]
+
+    def test_laptop_mandate_deterministically_blocks_dresses_and_eyeglasses(self):
+        mandate = PurchaseMandate(
+            max_amount=60000.0,
+            currency="INR",
+            category="laptop",
+            search_query="laptop",
+            allowed_conditions=["new"],
+            require_merchant_verification=True,
+            allow_add_ons=False,
+            user_restrictions=["Amazon India only"],
+        )
+
+        # 1. Dress candidate
+        dress_tx = ProposedTransaction(
+            product_name="Women's Floral Summer A-Line Dress",
+            category="womens-dresses",
+            product_price=1999.0,
+            shipping_cost=0.0,
+            tax=0.0,
+            additional_charges=0.0,
+            final_total=1999.0,
+            currency="INR",
+            merchant_name="Fashion Hub",
+            merchant_verified=True,
+            product_condition="new",
+            add_ons=[],
+        )
+        dress_res = policy_engine.evaluate_mandate(mandate, dress_tx, caller_role="human_user")
+        assert dress_res.approved is False
+        assert any(v.rule_id == "TG-003" for v in dress_res.violations)
+
+        # 2. Eyeglasses candidate
+        glasses_tx = ProposedTransaction(
+            product_name="Classic Anti-Glare Reading Glasses",
+            category="eyeglasses",
+            product_price=1299.0,
+            shipping_cost=0.0,
+            tax=0.0,
+            additional_charges=0.0,
+            final_total=1299.0,
+            currency="INR",
+            merchant_name="Vision Optical",
+            merchant_verified=True,
+            product_condition="new",
+            add_ons=[],
+        )
+        glasses_res = policy_engine.evaluate_mandate(mandate, glasses_tx, caller_role="human_user")
+        assert glasses_res.approved is False
+        assert any(v.rule_id == "TG-003" for v in glasses_res.violations)
+
+    def test_unknown_category_rejected_when_not_identifiable_as_laptop(self):
+        mandate = PurchaseMandate(
+            max_amount=60000.0,
+            currency="INR",
+            category="laptop",
+            allowed_conditions=["new"],
+            require_merchant_verification=True,
+            allow_add_ons=False,
+        )
+        unknown_tx = ProposedTransaction(
+            product_name="Non-descript Mystery Electronic Gadget",
+            category="UNKNOWN",
+            product_price=25000.0,
+            shipping_cost=0.0,
+            tax=0.0,
+            additional_charges=0.0,
+            final_total=25000.0,
+            currency="INR",
+            merchant_name="Direct Vendor",
+            merchant_verified=True,
+            product_condition="new",
+            add_ons=[],
+        )
+        res = policy_engine.evaluate_mandate(mandate, unknown_tx, caller_role="human_user")
+        assert res.approved is False
+        assert any(v.rule_id == "TG-003" for v in res.violations)
+        assert any("unknown category" in v.message.lower() for v in res.violations)
+
+    @pytest.mark.asyncio
+    async def test_prohibited_condition_query_falls_back_to_category(self):
+        mandate = PurchaseMandate(
+            max_amount=60000.0,
+            currency="INR",
+            category="laptop",
+            search_query="laptop",
+            allowed_conditions=["new"],
+            require_merchant_verification=True,
+            allow_add_ons=False,
+            user_restrictions=["brand new only", "Amazon India only"],
+        )
+        # When query is passed as "brand new only", searchCandidates should fall back to "laptop"
+        response = await product_discovery_service.search_candidates(
+            mandate=mandate,
+            query="brand new only",
+            marketplace_id="demo",
+            region="amazon.in",
+        )
+        assert response.query == "laptop"
+        assert response.total_count > 0
+        assert response.candidates[0].product.category == "Laptops"

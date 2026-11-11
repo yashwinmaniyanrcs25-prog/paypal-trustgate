@@ -6,6 +6,7 @@ prompt-injection or hallucination vulnerability.
 """
 
 import hashlib
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -522,64 +523,132 @@ class PolicyEngine:
         mandate: PurchaseMandate,
         transaction: ProposedTransaction,
     ) -> tuple[bool, Optional[str]]:
-        """Evaluates whether the proposed transaction satisfies mandate user_restrictions and product category rules."""
-        if not mandate.user_restrictions:
-            return True, None
-
+        """Evaluates whether the proposed transaction satisfies mandate product category rules and user_restrictions."""
         prod_name = (transaction.product_name or "").lower()
         category = getattr(transaction, "category", "General") or "General"
         category_lower = category.lower()
+
+        # -------------------------------------------------------------
+        # Part A: Deterministic Product Category Enforcement
+        # -------------------------------------------------------------
+        mandated_category = (getattr(mandate, "category", None) or "").strip().lower()
+        is_laptop_mandate = (
+            mandated_category in ("laptop", "laptops", "notebook", "notebooks")
+            or any(
+                ("laptop" in (r or "").lower() or "notebook" in (r or "").lower())
+                for r in (mandate.user_restrictions or [])
+            )
+        )
+
+        if is_laptop_mandate:
+            # 1. Deterministically reject unrelated commercial categories (e.g. dresses, eyeglasses, apparel, beauty, etc.)
+            UNRELATED_LAPTOP_KEYWORDS = {
+                "dress", "dresses", "clothing", "apparel", "shoes", "shoe",
+                "sunglasses", "sunglass", "eyeglasses", "eyeglass", "eyewear",
+                "beauty", "fragrance", "fragrances", "perfume", "groceries",
+                "grocery", "furniture", "kitchen", "shirts", "shirt", "watches",
+                "watch", "motorcycle", "bags", "bag", "jewellery", "jewelry",
+                "smartphones", "smartphone", "tablets", "tablet", "phone", "phones",
+                "toys", "toy", "smartwatch", "smartwatches"
+            }
+            cat_tokens = set(re.findall(r'[a-z0-9]+', category_lower))
+            is_explicit_laptop_cat = bool(cat_tokens & {"laptop", "laptops", "notebook", "notebooks", "ultrabook", "ultrabooks"})
+
+            if not is_explicit_laptop_cat and (cat_tokens & UNRELATED_LAPTOP_KEYWORDS):
+                return False, (
+                    f"Product '{transaction.product_name}' (Category: '{category}') violates mandate restriction: "
+                    f"Mandate strictly requires 'laptop'. Unrelated categories ({category}) are prohibited."
+                )
+
+            # 2. Disallow accessories, mice, keyboards, cables, cases, stands, etc.
+            is_accessory_category = any(
+                acc in category_lower
+                for acc in ("accessories", "mice", "mouse", "keyboard", "headphone", "audio", "cables", "chargers", "cases", "parts", "bags")
+            )
+            accessory_terms = (
+                "mouse", "keyboard", "trackpad", "headphone", "headset", "earbuds",
+                "charger", "adapter", "sleeve", "stand", "dock", "hub", "cable",
+                "case", "cooling pad", "screen protector", "skin", "backpack", "mousepad", "dongle"
+            )
+            is_accessory_name = any(acc in prod_name for acc in accessory_terms)
+            if any(model in prod_name for model in ("ideapad", "thinkpad", "vivobook", "zenbook", "aspire", "pavilion", "macbook", "xps", "laptop")):
+                has_laptop_accessory_phrase = any(
+                    phrase in prod_name
+                    for phrase in ("laptop sleeve", "laptop bag", "laptop stand", "laptop charger", "laptop case", "laptop cooling", "for laptop", "laptop skin", "laptop backpack", "laptop mouse")
+                )
+                if not has_laptop_accessory_phrase and any(lp in prod_name for lp in ("laptop", "notebook", "ultrabook", "macbook")):
+                    is_accessory_name = False
+
+            if is_accessory_category or is_accessory_name:
+                return False, (
+                    f"Product '{transaction.product_name}' (Category: {category}) violates mandate restriction: "
+                    "Mandate strictly requires a standalone laptop. Unrelated categories, mice, keyboards, and accessories are prohibited."
+                )
+
+            # 3. Fail-closed on Unknown or General categories when title lacks verified laptop specifications
+            # "Unknown categories must not be assumed compliant."
+            is_unknown_cat = category_lower in ("", "unknown", "general", "other", "n/a", "none")
+            has_laptop_title = any(
+                term in prod_name
+                for term in ("laptop", "notebook", "ultrabook", "macbook", "thinkpad", "ideapad", "zenbook", "vivobook", "chromebook", "aspire", "pavilion", "latitude", "precision", "inspiron", "yoga", "surface laptop")
+            )
+            if is_unknown_cat and not has_laptop_title:
+                return False, (
+                    f"Product '{transaction.product_name}' has an unknown category ('{category}') and title lacks verified laptop specifications. "
+                    "Unknown categories cannot be assumed compliant under TrustGate policy."
+                )
+
+            # 4. If category is another known product category (e.g. "Keyboards", "Mouse", "Monitors", "Smartphones")
+            is_laptop_cat = any(lp in category_lower for lp in ("laptop", "notebook", "ultrabook", "computers"))
+            if not is_laptop_cat and not has_laptop_title:
+                return False, (
+                    f"Product '{transaction.product_name}' (Category: '{category}') violates mandate restriction: "
+                    f"Category does not match mandated 'laptop'."
+                )
+
+        elif mandated_category in ("mouse", "mice"):
+            is_mouse = "mouse" in category_lower or "mice" in category_lower or "mouse" in prod_name
+            if not is_mouse or "laptop" in category_lower:
+                return False, (
+                    f"Product '{transaction.product_name}' (Category: {category}) violates mandate restriction: "
+                    "Product is not an eligible mouse candidate."
+                )
+
+        elif mandated_category == "keyboard":
+            is_keyboard = "keyboard" in category_lower or "keyboard" in prod_name
+            if not is_keyboard or "laptop" in category_lower:
+                return False, (
+                    f"Product '{transaction.product_name}' (Category: {category}) violates mandate restriction: "
+                    "Product is not an eligible keyboard candidate."
+                )
+
+        # -------------------------------------------------------------
+        # Part B: User Restrictions Evaluation
+        # -------------------------------------------------------------
+        if not mandate.user_restrictions:
+            return True, None
 
         for raw_restriction in mandate.user_restrictions:
             restriction = raw_restriction.strip().lower()
             if not restriction:
                 continue
 
-            # Skip general merchant/condition restrictions that are evaluated in TG-003/TG-004
-            if restriction in ("verified seller", "verified merchant", "new only", "new condition"):
+            # Skip general merchant/condition/spec restrictions evaluated in TG-001..TG-006
+            if restriction in (
+                "verified seller", "verified merchant", "verified sellers",
+                "new only", "new condition", "brand new only", "brand new",
+                "no refurbished", "no accessories", "amazon india only", "amazon us only"
+            ):
                 continue
 
             is_exclusive = "only" in restriction
 
-            # 1. Laptop restrictions: e.g. "new laptop only", "laptop only", "laptops only"
+            # Laptop restrictions
             if ("laptop" in restriction or "notebook" in restriction) and is_exclusive:
-                # Disallow accessories, mice, keyboards, cables, etc.
-                is_accessory_category = any(
-                    acc in category_lower
-                    for acc in ("accessories", "mice", "mouse", "keyboard", "headphone", "audio", "cables", "chargers", "cases", "parts")
-                )
+                if not is_laptop_mandate:
+                    pass
 
-                # Check if product name indicates an accessory rather than a standalone laptop
-                accessory_terms = (
-                    "mouse", "keyboard", "trackpad", "headphone", "headset", "earbuds",
-                    "charger", "adapter", "sleeve", "stand", "dock", "hub", "cable",
-                    "case", "cooling pad", "screen protector", "skin", "backpack", "mousepad"
-                )
-                is_accessory_name = any(acc in prod_name for acc in accessory_terms)
-                if any(model in prod_name for model in ("ideapad", "thinkpad", "vivobook", "zenbook", "aspire", "pavilion", "macbook", "xps", "laptop")):
-                    has_laptop_accessory_phrase = any(
-                        phrase in prod_name
-                        for phrase in ("laptop sleeve", "laptop bag", "laptop stand", "laptop charger", "laptop case", "laptop cooling", "for laptop", "laptop skin", "laptop backpack", "laptop mouse")
-                    )
-                    if not has_laptop_accessory_phrase and any(lp in prod_name for lp in ("laptop", "notebook", "ultrabook", "macbook")):
-                        is_accessory_name = False
-
-                is_laptop_item = (
-                    ("laptop" in category_lower or "notebook" in category_lower or "laptops" in category_lower)
-                    or (
-                        any(term in prod_name for term in ("laptop", "notebook", "ultrabook", "macbook", "thinkpad", "ideapad", "zenbook", "vivobook", "chromebook"))
-                        and not is_accessory_name
-                        and not is_accessory_category
-                    )
-                )
-
-                if is_accessory_category or is_accessory_name or not is_laptop_item:
-                    return False, (
-                        f"Product '{transaction.product_name}' (Category: {category}) violates mandate restriction: "
-                        f"'{raw_restriction}'. Unrelated categories, mice, keyboards, and accessories are prohibited."
-                    )
-
-            # 2. Mouse restrictions: e.g. "mouse only", "mice only"
+            # Mouse restrictions: e.g. "mouse only", "mice only"
             elif ("mouse" in restriction or "mice" in restriction) and is_exclusive:
                 is_mouse = "mouse" in category_lower or "mice" in category_lower or "mouse" in prod_name
                 if not is_mouse or "laptop" in category_lower:
@@ -588,7 +657,7 @@ class PolicyEngine:
                         f"'{raw_restriction}'. Product is not an eligible mouse candidate."
                     )
 
-            # 3. Keyboard restrictions: e.g. "keyboard only", "mechanical keyboard only"
+            # Keyboard restrictions: e.g. "keyboard only", "mechanical keyboard only"
             elif "keyboard" in restriction and is_exclusive:
                 is_keyboard = "keyboard" in category_lower or "keyboard" in prod_name
                 if not is_keyboard or "laptop" in category_lower:
@@ -597,7 +666,7 @@ class PolicyEngine:
                         f"'{raw_restriction}'. Product is not an eligible keyboard candidate."
                     )
 
-            # 4. Explicit model/brand restriction (e.g. "keychron k2")
+            # Explicit model/brand restriction (e.g. "keychron k2")
             elif "keychron" in restriction:
                 if "keychron" not in prod_name:
                     return False, (

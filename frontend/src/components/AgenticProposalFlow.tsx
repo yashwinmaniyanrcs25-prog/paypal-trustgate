@@ -44,6 +44,8 @@ interface AgenticProposalFlowProps {
 const DEFAULT_DEMO_MANDATE_USD: PurchaseMandate = {
   max_amount: 150.0,
   currency: 'USD',
+  category: 'keyboard',
+  search_query: 'Keychron K2',
   allowed_conditions: ['new'],
   require_merchant_verification: true,
   allow_add_ons: false,
@@ -53,14 +55,35 @@ const DEFAULT_DEMO_MANDATE_USD: PurchaseMandate = {
 const DEFAULT_DEMO_MANDATE_INR: PurchaseMandate = {
   max_amount: 60000.0,
   currency: 'INR',
+  category: 'laptop',
+  search_query: 'laptop',
   allowed_conditions: ['new'],
   require_merchant_verification: true,
   allow_add_ons: false,
   user_restrictions: ['new laptop only', 'verified seller'],
 };
 
+const isConditionOrRestrictionPhrase = (term: string): boolean => {
+  const lower = term.toLowerCase().trim();
+  const prohibited = [
+    'brand new only', 'brand new', 'brand-new', 'new only', 'new', 'refurbished',
+    'used', 'verified seller', 'verified seller only', 'verified sellers',
+    'no refurbished', 'no accessories', 'no refurbished products', 'no add-ons',
+    'in stock only', 'in-stock only', 'in stock', 'amazon india only', 'amazon us only',
+  ];
+  return prohibited.includes(lower) || lower.startsWith('no ') || (lower.endsWith(' only') && !lower.includes('laptop') && !lower.includes('keyboard') && !lower.includes('mouse'));
+};
+
 const getInferredQuery = (mandate: PurchaseMandate | null): string => {
   if (!mandate) return 'laptop';
+  if (mandate.search_query && mandate.search_query.trim()) {
+    const sq = mandate.search_query.trim();
+    if (!isConditionOrRestrictionPhrase(sq)) return sq;
+  }
+  if (mandate.category && mandate.category.trim()) {
+    const cat = mandate.category.trim();
+    if (!isConditionOrRestrictionPhrase(cat)) return cat;
+  }
   if (mandate.user_restrictions && mandate.user_restrictions.length > 0) {
     for (const r of mandate.user_restrictions) {
       const lower = r.toLowerCase();
@@ -68,7 +91,6 @@ const getInferredQuery = (mandate: PurchaseMandate | null): string => {
       if (lower.includes('mouse') || lower.includes('mice')) return 'wireless mouse';
       if (lower.includes('keyboard') || lower.includes('keychron')) return 'Keychron K2';
     }
-    return mandate.user_restrictions[0];
   }
   return 'laptop';
 };

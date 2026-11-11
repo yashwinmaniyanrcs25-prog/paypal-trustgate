@@ -270,24 +270,29 @@ class ProposalStore:
                     (row["mandate_id"],),
                 ).fetchone()
                 if mandate_row:
-                    allowed_conds = mandate_row["allowed_conditions"]
-                    if isinstance(allowed_conds, str) and allowed_conds.startswith("["):
-                        allowed_conds = json.loads(allowed_conds)
-                    elif isinstance(allowed_conds, str):
-                        allowed_conds = [allowed_conds]
-                    user_rest = mandate_row["user_restrictions"]
-                    if isinstance(user_rest, str) and user_rest.startswith("["):
-                        user_rest = json.loads(user_rest)
-                    elif isinstance(user_rest, str):
-                        user_rest = [user_rest] if user_rest else []
-                    mandate = PurchaseMandate(
-                        max_amount=float(mandate_row["max_amount"]),
-                        currency=mandate_row["currency"],
-                        allowed_conditions=allowed_conds,
-                        require_merchant_verification=bool(mandate_row["require_merchant_verification"]),
-                        allow_add_ons=bool(mandate_row["allow_add_ons"]),
-                        user_restrictions=user_rest,
-                    )
+                    if "mandate_data" in row.keys() and row["mandate_data"]:
+                        mandate = PurchaseMandate.model_validate_json(row["mandate_data"])
+                        mandate.max_amount = float(mandate_row["max_amount"])
+                        mandate.currency = mandate_row["currency"]
+                    else:
+                        allowed_conds = mandate_row["allowed_conditions"]
+                        if isinstance(allowed_conds, str) and allowed_conds.startswith("["):
+                            allowed_conds = json.loads(allowed_conds)
+                        elif isinstance(allowed_conds, str):
+                            allowed_conds = [allowed_conds]
+                        user_rest = mandate_row["user_restrictions"]
+                        if isinstance(user_rest, str) and user_rest.startswith("["):
+                            user_rest = json.loads(user_rest)
+                        elif isinstance(user_rest, str):
+                            user_rest = [user_rest] if user_rest else []
+                        mandate = PurchaseMandate(
+                            max_amount=float(mandate_row["max_amount"]),
+                            currency=mandate_row["currency"],
+                            allowed_conditions=allowed_conds,
+                            require_merchant_verification=bool(mandate_row["require_merchant_verification"]),
+                            allow_add_ons=bool(mandate_row["allow_add_ons"]),
+                            user_restrictions=user_rest,
+                        )
                 else:
                     mandate = PurchaseMandate.model_validate_json(row["mandate_data"])
 
