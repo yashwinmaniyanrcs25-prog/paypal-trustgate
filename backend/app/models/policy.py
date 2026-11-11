@@ -2,7 +2,7 @@
 
 from enum import Enum
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ProductCondition(str, Enum):
@@ -68,6 +68,70 @@ class PurchaseMandate(BaseModel):
         description="Optional user-defined restrictions (e.g. 'US shipping only')",
     )
 
+    # Extended structured purchasing requirements
+    category: Optional[str] = Field(
+        default=None,
+        description="Mandated product category (e.g. 'laptop')",
+    )
+    min_ram_gb: Optional[int] = Field(
+        default=None,
+        description="Minimum RAM capacity in gigabytes (e.g. 16)",
+    )
+    min_storage_gb: Optional[int] = Field(
+        default=None,
+        description="Minimum storage capacity in gigabytes (e.g. 512)",
+    )
+    storage_type: Optional[str] = Field(
+        default=None,
+        description="Mandated storage type (e.g. 'SSD', 'NVMe')",
+    )
+    processor_requirement: Optional[str] = Field(
+        default=None,
+        description="Processor requirement (e.g. 'Intel Core i5 or AMD Ryzen 5 or better')",
+    )
+    gpu_requirement: Optional[str] = Field(
+        default=None,
+        description="GPU requirement",
+    )
+    display_size: Optional[str] = Field(
+        default=None,
+        description="Display size requirement",
+    )
+    brand_preference: Optional[str] = Field(
+        default=None,
+        description="Brand preference",
+    )
+    model_preference: Optional[str] = Field(
+        default=None,
+        description="Model preference",
+    )
+    marketplace: Optional[str] = Field(
+        default=None,
+        description="Mandated marketplace (e.g. 'amazon.in', 'amazon.com')",
+    )
+    in_stock_required: bool = Field(
+        default=True,
+        description="Whether product must be in stock / available for purchase",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def remap_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # remap max_budget -> max_amount if max_amount not present
+            if "max_budget" in data and "max_amount" not in data:
+                data["max_amount"] = data["max_budget"]
+            # remap verified_seller_required -> require_merchant_verification
+            if "verified_seller_required" in data and "require_merchant_verification" not in data:
+                data["require_merchant_verification"] = data["verified_seller_required"]
+            # remap allow_accessories -> allow_add_ons
+            if "allow_accessories" in data and "allow_add_ons" not in data:
+                data["allow_add_ons"] = data["allow_accessories"]
+            # remap condition -> allowed_conditions
+            if "condition" in data and "allowed_conditions" not in data:
+                data["allowed_conditions"] = [data["condition"]]
+        return data
+
     @field_validator("currency", mode="before")
     @classmethod
     def normalize_currency(cls, v: Any) -> str:
@@ -90,6 +154,7 @@ class ProposedTransaction(BaseModel):
     """Proposed transaction details from merchant or agent proposal."""
     product_name: str = Field(..., min_length=1, description="Product title or description")
     product_description: Optional[str] = Field(default="", description="Detailed product description")
+    category: Optional[str] = Field(default="General", description="Product category")
     product_price: float = Field(..., ge=0, description="Base product price")
     shipping_cost: float = Field(default=0.0, ge=0, description="Shipping cost")
     tax: float = Field(default=0.0, ge=0, description="Applicable tax")
@@ -100,6 +165,22 @@ class ProposedTransaction(BaseModel):
     merchant_verified: bool = Field(default=False, description="Whether merchant is verified")
     product_condition: str = Field(default="new", description="Product condition (new, used, refurbished)")
     add_ons: List[str] = Field(default_factory=list, description="Additional items or add-ons included")
+
+    # Normalized hardware and marketplace specifications
+    brand: Optional[str] = Field(default=None, description="Product brand name")
+    model: Optional[str] = Field(default=None, description="Product model identifier")
+    ram_gb: Optional[int] = Field(default=None, description="RAM size in GB")
+    storage_gb: Optional[int] = Field(default=None, description="Storage capacity in GB")
+    storage_type: Optional[str] = Field(default=None, description="Storage type (SSD, NVMe, eMMC, HDD)")
+    processor: Optional[str] = Field(default=None, description="Processor name/tier")
+    gpu: Optional[str] = Field(default=None, description="Graphics card or integrated GPU")
+    screen_size: Optional[str] = Field(default=None, description="Screen size in inches")
+    availability: Optional[str] = Field(default="InStock", description="Availability status (InStock, OutOfStock, etc.)")
+    marketplace: Optional[str] = Field(default=None, description="Listing marketplace (e.g. amazon.in, amazon.com)")
+    retailer: Optional[str] = Field(default=None, description="Listing retailer domain (e.g. officedepot.com)")
+    original_price: Optional[float] = Field(default=None, description="Original listing price before conversion")
+    original_currency: Optional[str] = Field(default=None, description="Original listing currency ISO code")
+    spec_verification_status: Optional[str] = Field(default="UNKNOWN", description="VERIFIED, UNVERIFIED, or UNKNOWN")
 
     @field_validator("currency", mode="before")
     @classmethod

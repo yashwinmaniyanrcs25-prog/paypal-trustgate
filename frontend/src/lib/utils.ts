@@ -6,10 +6,13 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amount: number, currency: string = 'USD'): string {
-  return new Intl.NumberFormat('en-US', {
+  const curr = (currency || 'USD').trim().toUpperCase();
+  const locale = curr === 'INR' ? 'en-IN' : 'en-US';
+  return new Intl.NumberFormat(locale, {
     style: 'currency',
-    currency,
+    currency: curr,
     minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(amount);
 }
 

@@ -57,6 +57,17 @@ export interface PurchaseMandate {
   require_merchant_verification: boolean;
   allow_add_ons: boolean;
   user_restrictions?: string[];
+  category?: string | null;
+  min_ram_gb?: number | null;
+  min_storage_gb?: number | null;
+  storage_type?: string | null;
+  processor_requirement?: string | null;
+  gpu_requirement?: string | null;
+  display_size?: string | null;
+  brand_preference?: string | null;
+  model_preference?: string | null;
+  marketplace?: string | null;
+  in_stock_required?: boolean;
 }
 
 export interface ProposedTransaction {
@@ -72,6 +83,20 @@ export interface ProposedTransaction {
   merchant_verified: boolean;
   product_condition: string;
   add_ons: string[];
+  brand?: string | null;
+  model?: string | null;
+  ram_gb?: number | null;
+  storage_gb?: number | null;
+  storage_type?: string | null;
+  processor?: string | null;
+  gpu?: string | null;
+  screen_size?: string | null;
+  availability?: string | null;
+  marketplace?: string | null;
+  retailer?: string | null;
+  original_price?: number | null;
+  original_currency?: string | null;
+  spec_verification_status?: string | null;
 }
 
 export interface MandatePolicyEvaluationRequest {
@@ -242,6 +267,18 @@ export interface DiscoveredProduct {
   purchase_url?: string | null;
   availability?: string | null;
   retailer?: string | null;
+  brand?: string | null;
+  model?: string | null;
+  ram_gb?: number | null;
+  storage_gb?: number | null;
+  storage_type?: string | null;
+  processor?: string | null;
+  gpu?: string | null;
+  screen_size?: string | null;
+  original_price?: number | null;
+  original_currency?: string | null;
+  spec_verification_status?: string | null;
+  enrichment_status?: string | null;
 }
 
 export interface Channel3TestResponse {
@@ -260,11 +297,13 @@ export interface CandidateEvaluation {
   product: DiscoveredProduct;
   policy_result: MandatePolicyEvaluationResponse;
   approved: boolean;
-  status: 'APPROVED' | 'BLOCKED';
+  status: 'APPROVED' | 'NEEDS_VERIFICATION' | 'BLOCKED';
   budget_remaining: number;
   currency: string;
   can_select: boolean;
   selection_blocked_reason?: string | null;
+  unverified_reasons?: string[] | null;
+  enrichment_status?: string | null;
 }
 
 export interface ProposalSearchRequest {
@@ -273,13 +312,26 @@ export interface ProposalSearchRequest {
   catalog_mode?: 'demo' | 'external' | 'amazon';
   marketplace_id?: string;
   region?: string;
+  page?: number;
+  limit?: number;
+  offset?: number;
+  page_token?: string | null;
 }
 
 export interface ProposalSearchResponse {
+  query?: string;
   candidates: CandidateEvaluation[];
+  discovered_count?: number;
+  enriched_count?: number;
+  eligible_count?: number;
+  unverified_count?: number;
   compliant_count: number;
   blocked_count: number;
   total_count: number;
+  has_more?: boolean;
+  page?: number;
+  total_pages?: number;
+  next_page_token?: string | null;
   catalog_mode: string;
   data_source: string;
   is_demo_data: boolean;

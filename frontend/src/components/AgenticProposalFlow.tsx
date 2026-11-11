@@ -28,10 +28,10 @@ import {
   ProposalSearchResponse,
   StageProposalResponse,
   MarketplaceStatus,
-  MarketplaceIntegrationState,
+  MarketplaceIntegrationState, 
 } from '../types';
 import { api } from '../lib/api';
-import { cn, extractErrorMessage } from '../lib/utils';
+import { cn, extractErrorMessage, formatCurrency } from '../lib/utils';
 
 interface AgenticProposalFlowProps {
   mandate: PurchaseMandate | null;
@@ -56,7 +56,21 @@ const DEFAULT_DEMO_MANDATE_INR: PurchaseMandate = {
   allowed_conditions: ['new'],
   require_merchant_verification: true,
   allow_add_ons: false,
-  user_restrictions: ['laptop only', 'verified seller'],
+  user_restrictions: ['new laptop only', 'verified seller'],
+};
+
+const getInferredQuery = (mandate: PurchaseMandate | null): string => {
+  if (!mandate) return 'laptop';
+  if (mandate.user_restrictions && mandate.user_restrictions.length > 0) {
+    for (const r of mandate.user_restrictions) {
+      const lower = r.toLowerCase();
+      if (lower.includes('laptop') || lower.includes('notebook')) return 'laptop';
+      if (lower.includes('mouse') || lower.includes('mice')) return 'wireless mouse';
+      if (lower.includes('keyboard') || lower.includes('keychron')) return 'Keychron K2';
+    }
+    return mandate.user_restrictions[0];
+  }
+  return 'laptop';
 };
 
 export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
@@ -67,20 +81,26 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
   onNavigateToApprovals,
 }) => {
   // Selected Marketplace & Region
-  const [selectedMarketplace, setSelectedMarketplace] = useState<'channel3' | 'amazon' | 'demo'>('channel3');
-  const [selectedRegion, setSelectedRegion] = useState<string>('global');
+  const [selectedMarketplace, setSelectedMarketplace] = useState<'channel3' | 'amazon' | 'demo'>('demo');
+  const [selectedRegion, setSelectedRegion] = useState<string>(
+    initialMandate?.currency === 'USD' ? 'amazon.com' : 'amazon.in'
+  );
   const [marketplaces, setMarketplaces] = useState<MarketplaceStatus[]>([]);
   const [isFetchingStatus, setIsFetchingStatus] = useState<boolean>(false);
 
   // Active Mandate
   const [activeMandate, setActiveMandate] = useState<PurchaseMandate>(
-    initialMandate || DEFAULT_DEMO_MANDATE_USD
+    initialMandate || DEFAULT_DEMO_MANDATE_INR
   );
 
-  const [query, setQuery] = useState('wireless keyboard');
-  const [filterMode, setFilterMode] = useState<'all' | 'approved' | 'blocked'>('all');
+  const [query, setQuery] = useState<string>(
+    getInferredQuery(initialMandate || DEFAULT_DEMO_MANDATE_INR)
+  );
+  const [filterMode, setFilterMode] = useState<'all' | 'eligible' | 'unverified' | 'blocked'>('all');
 
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [page, setPage] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [searchResponse, setSearchResponse] = useState<ProposalSearchResponse | null>(null);
 
@@ -93,10 +113,99 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
   const [isStaging, setIsStaging] = useState(false);
   const [stageError, setStageError] = useState<string | null>(null);
 
+  // Execute candidate search (resets pagination to page 1)
+  const handleSearch = async (
+    overrideQuery?: string,
+    overrideMarketplace?: 'channel3' | 'amazon' | 'demo',
+    overrideRegion?: string,
+    overrideMandate?: PurchaseMandate
+  ) => {
+    const q = (overrideQuery !== undefined ? overrideQuery : query).trim();
+    setQuery(q);
+    const mkt = overrideMarketplace !== undefined ? overrideMarketplace : selectedMarketplace;
+    const reg = overrideRegion !== undefined ? overrideRegion : selectedRegion;
+    const mand = overrideMandate !== undefined ? overrideMandate : activeMandate;
+
+    setIsLoading(true);
+    setError(null);
+    setPage(1);
+    try {
+      const res = await api.searchProposals({
+        mandate: mand,
+        query: q,
+        marketplaceId: mkt,
+        region: reg,
+        page: 1,
+        limit: 10,
+      });
+      setSearchResponse(res);
+      if (res.query) {
+        setQuery(res.query);
+      }
+
+      // Auto-expand first approved candidate for demonstration clarity
+      const newExpanded: Record<string, boolean> = {};
+      if (res.candidates.length > 0) {
+        newExpanded[res.candidates[0].product.product_id] = true;
+      }
+      setExpandedCards(newExpanded);
+    } catch (err: unknown) {
+      const msg = extractErrorMessage(err, 'Failed to search candidate products.');
+      setError(msg);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Load next page of results
+  const handleLoadMore = async () => {
+    if (!searchResponse || isLoadingMore) return;
+    const nextPage = page + 1;
+    setIsLoadingMore(true);
+    try {
+      const res = await api.searchProposals({
+        mandate: activeMandate,
+        query: query.trim(),
+        marketplaceId: selectedMarketplace,
+        region: selectedRegion,
+        page: nextPage,
+        limit: 10,
+        page_token: searchResponse.next_page_token,
+      });
+
+      // Append deduplicated candidates
+      const existingIds = new Set(searchResponse.candidates.map((c) => c.product.product_id));
+      const freshCandidates = res.candidates.filter((c) => !existingIds.has(c.product.product_id));
+      const mergedCandidates = [...searchResponse.candidates, ...freshCandidates];
+
+      setSearchResponse({
+        ...res,
+        candidates: mergedCandidates,
+        discovered_count: (searchResponse.discovered_count || searchResponse.total_count) + (res.discovered_count || res.candidates.length),
+        enriched_count: (searchResponse.enriched_count || 0) + (res.enriched_count || 0),
+        eligible_count: mergedCandidates.filter((c) => c.status === 'APPROVED' || c.approved).length,
+        unverified_count: mergedCandidates.filter((c) => c.status === 'NEEDS_VERIFICATION').length,
+        compliant_count: mergedCandidates.filter((c) => c.status === 'APPROVED' || c.approved).length,
+        blocked_count: mergedCandidates.filter((c) => c.status === 'BLOCKED' || (!c.approved && c.status !== 'NEEDS_VERIFICATION')).length,
+        total_count: mergedCandidates.length,
+      });
+      setPage(nextPage);
+    } catch (err: unknown) {
+      console.warn('Failed to load more products:', err);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
   // Sync if initialMandate changes from parent
   useEffect(() => {
     if (initialMandate) {
       setActiveMandate(initialMandate);
+      const q = getInferredQuery(initialMandate);
+      setQuery(q);
+      const targetReg = initialMandate.currency.toUpperCase() === 'INR' ? 'amazon.in' : 'amazon.com';
+      setSelectedRegion(targetReg);
+      handleSearch(q, selectedMarketplace, targetReg, initialMandate);
     }
   }, [initialMandate]);
 
@@ -117,41 +226,10 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
     fetchMarketplaceStatuses();
   }, [selectedRegion]);
 
-  // Execute candidate search
-  const handleSearch = async (overrideQuery?: string, overrideMarketplace?: 'channel3' | 'amazon' | 'demo', overrideRegion?: string) => {
-    const q = overrideQuery !== undefined ? overrideQuery : query;
-    const mkt = overrideMarketplace !== undefined ? overrideMarketplace : selectedMarketplace;
-    const reg = overrideRegion !== undefined ? overrideRegion : selectedRegion;
-
-    setIsLoading(true);
-    setError(null);
-    try {
-      const res = await api.searchProposals({
-        mandate: activeMandate,
-        query: q,
-        marketplaceId: mkt,
-        region: reg,
-      });
-      setSearchResponse(res);
-
-      // Auto-expand first approved and first blocked candidate for demonstration clarity
-      const newExpanded: Record<string, boolean> = {};
-      if (res.candidates.length > 0) {
-        newExpanded[res.candidates[0].product.product_id] = true;
-      }
-      setExpandedCards(newExpanded);
-    } catch (err: unknown) {
-      const msg = extractErrorMessage(err, 'Failed to search candidate products.');
-      setError(msg);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Run initial search on mount or when marketplace/region changes
+  // Run initial search on mount
   useEffect(() => {
-    handleSearch(query, selectedMarketplace, selectedRegion);
-  }, [selectedMarketplace, selectedRegion, activeMandate]);
+    handleSearch(query, selectedMarketplace, selectedRegion, activeMandate);
+  }, [selectedMarketplace]);
 
   const toggleCardExpand = (productId: string) => {
     setExpandedCards((prev) => ({
@@ -237,8 +315,9 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
 
   // Filter candidates based on selected filterMode
   const filteredCandidates = (searchResponse?.candidates || []).filter((cand) => {
-    if (filterMode === 'approved') return cand.approved;
-    if (filterMode === 'blocked') return !cand.approved;
+    if (filterMode === 'eligible') return cand.status === 'APPROVED' || cand.approved;
+    if (filterMode === 'unverified') return cand.status === 'NEEDS_VERIFICATION';
+    if (filterMode === 'blocked') return cand.status === 'BLOCKED' || (!cand.approved && cand.status !== 'NEEDS_VERIFICATION');
     return true;
   });
 
@@ -268,8 +347,10 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                 )}
               </div>
               <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                Budget Cap: {activeMandate.currency}{' '}
-                <span className="text-emerald-400">{activeMandate.max_amount.toFixed(2)}</span>
+                Budget Cap:{' '}
+                <span className="text-emerald-400">
+                  {formatCurrency(activeMandate.max_amount, activeMandate.currency)}
+                </span>
               </h2>
             </div>
           </div>
@@ -288,10 +369,10 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
               type="button"
               onClick={() => {
                 setActiveMandate(DEFAULT_DEMO_MANDATE_USD);
-                setSelectedRegion('demo_us');
+                setSelectedRegion('amazon.com');
                 setSelectedMarketplace('demo');
                 setQuery('Keychron K2');
-                handleSearch('Keychron K2', 'demo', 'demo_us');
+                handleSearch('Keychron K2', 'demo', 'amazon.com', DEFAULT_DEMO_MANDATE_USD);
               }}
               className="px-3 py-1.5 rounded-lg bg-navy-800/60 hover:bg-navy-800 border border-navy-800 text-xs font-mono text-slate-400 hover:text-slate-200 transition-all"
             >
@@ -302,6 +383,9 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
               onClick={() => {
                 setActiveMandate(DEFAULT_DEMO_MANDATE_INR);
                 setSelectedRegion('amazon.in');
+                setSelectedMarketplace('demo');
+                setQuery('laptop');
+                handleSearch('laptop', 'demo', 'amazon.in', DEFAULT_DEMO_MANDATE_INR);
               }}
               className="px-3 py-1.5 rounded-lg bg-navy-800/60 hover:bg-navy-800 border border-navy-800 text-xs font-mono text-slate-400 hover:text-slate-200 transition-all"
             >
@@ -473,7 +557,17 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                 type="button"
                 onClick={() => {
                   setSelectedRegion('amazon.in');
-                  handleSearch(query, selectedMarketplace, 'amazon.in');
+                  let newMandate = activeMandate;
+                  if (activeMandate.currency !== 'INR') {
+                    const newAmount = activeMandate.max_amount <= 150 ? 60000 : Math.round(activeMandate.max_amount * 83);
+                    newMandate = {
+                      ...activeMandate,
+                      currency: 'INR',
+                      max_amount: newAmount,
+                    };
+                    setActiveMandate(newMandate);
+                  }
+                  handleSearch(query, selectedMarketplace, 'amazon.in', newMandate);
                 }}
                 className={cn(
                   'px-3 py-1 rounded-md transition-all font-semibold',
@@ -488,7 +582,17 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                 type="button"
                 onClick={() => {
                   setSelectedRegion('amazon.com');
-                  handleSearch(query, selectedMarketplace, 'amazon.com');
+                  let newMandate = activeMandate;
+                  if (activeMandate.currency !== 'USD') {
+                    const newAmount = activeMandate.max_amount >= 60000 ? 720 : Math.round(activeMandate.max_amount / 83);
+                    newMandate = {
+                      ...activeMandate,
+                      currency: 'USD',
+                      max_amount: newAmount,
+                    };
+                    setActiveMandate(newMandate);
+                  }
+                  handleSearch(query, selectedMarketplace, 'amazon.com', newMandate);
                 }}
                 className={cn(
                   'px-3 py-1 rounded-md transition-all font-semibold',
@@ -636,23 +740,25 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
 
         {/* Search Query Input Bar */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
-          <div className="flex-1 flex items-center gap-2">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSearch(query);
+            }}
+            className="flex-1 flex items-center gap-2"
+          >
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSearch();
-                }}
                 placeholder={`Search ${selectedMarketplace === 'amazon' ? 'Amazon ' + selectedRegion : 'demo catalog'} (e.g. laptop, mechanical keyboard)...`}
                 className="w-full bg-navy-950 border border-navy-700/80 rounded-xl pl-10 pr-4 py-2.5 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
               />
             </div>
             <button
-              type="button"
-              onClick={() => handleSearch()}
+              type="submit"
               disabled={isLoading}
               className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-navy-950 font-mono font-bold text-xs rounded-xl flex items-center gap-2 shadow-emerald-glow transition-all"
             >
@@ -663,11 +769,11 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
               )}
               <span>Discover & Evaluate</span>
             </button>
-          </div>
+          </form>
 
           {/* Filter Pills */}
           {searchResponse && searchResponse.total_count > 0 && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setFilterMode('all')}
@@ -682,15 +788,27 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setFilterMode('approved')}
+                onClick={() => setFilterMode('eligible')}
                 className={cn(
                   'px-3 py-1 rounded-lg text-xs font-mono transition-all flex items-center gap-1',
-                  filterMode === 'approved'
+                  filterMode === 'eligible'
                     ? 'bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/40'
                     : 'text-emerald-500/70 hover:text-emerald-400'
                 )}
               >
-                <Check className="w-3 h-3" /> Approved ({searchResponse.compliant_count})
+                <Check className="w-3 h-3" /> Eligible ({searchResponse.eligible_count ?? searchResponse.compliant_count})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterMode('unverified')}
+                className={cn(
+                  'px-3 py-1 rounded-lg text-xs font-mono transition-all flex items-center gap-1',
+                  filterMode === 'unverified'
+                    ? 'bg-amber-500/20 text-amber-300 font-bold border border-amber-500/40'
+                    : 'text-amber-500/70 hover:text-amber-400'
+                )}
+              >
+                <AlertTriangle className="w-3 h-3" /> Needs Verification ({searchResponse.unverified_count ?? 0})
               </button>
               <button
                 type="button"
@@ -707,6 +825,39 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
             </div>
           )}
         </div>
+
+        {/* Discovery & Metadata Enrichment Telemetry Banner */}
+        {searchResponse && searchResponse.total_count > 0 && (
+          <div className="pt-2 border-t border-navy-800/60 flex flex-wrap items-center justify-between gap-3 text-[11px] font-mono text-slate-400">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                Discovered: <strong className="text-white">{searchResponse.discovered_count || searchResponse.total_count}</strong>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-sky-400" />
+                Enriched: <strong className="text-sky-300">{searchResponse.enriched_count || 0}</strong>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                Eligible: <strong className="text-emerald-300">{searchResponse.eligible_count ?? searchResponse.compliant_count}</strong>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                Needs Verification: <strong className="text-amber-300">{searchResponse.unverified_count || 0}</strong>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                Blocked: <strong className="text-rose-300">{searchResponse.blocked_count}</strong>
+              </span>
+            </div>
+            {searchResponse.page && searchResponse.page > 1 && (
+              <span className="text-[10px] text-slate-500">
+                Page {searchResponse.page} of {searchResponse.total_pages || searchResponse.page}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Error state */}
@@ -817,6 +968,8 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                       'rounded-2xl border transition-all duration-300 flex flex-col justify-between overflow-hidden',
                       cand.approved
                         ? 'border-emerald-500/40 bg-gradient-to-b from-navy-900/90 to-emerald-950/20 shadow-emerald-glow/20 hover:border-emerald-500/60'
+                        : cand.status === 'NEEDS_VERIFICATION'
+                        ? 'border-amber-500/40 bg-gradient-to-b from-navy-900/80 to-amber-950/20 hover:border-amber-500/50'
                         : 'border-rose-500/30 bg-gradient-to-b from-navy-900/80 to-rose-950/20 hover:border-rose-500/50'
                     )}
                   >
@@ -843,12 +996,17 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                           {cand.approved ? (
                             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500 text-navy-950 shadow-emerald-glow">
                               <ShieldCheck className="w-3.5 h-3.5" />
-                              POLICY APPROVED
+                              ELIGIBLE (APPROVED)
+                            </span>
+                          ) : cand.status === 'NEEDS_VERIFICATION' ? (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold bg-amber-500 text-navy-950 shadow-amber-glow">
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                              NEEDS VERIFICATION
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold bg-rose-500 text-white shadow-rose-glow">
                               <ShieldAlert className="w-3.5 h-3.5" />
-                              POLICY BLOCKED
+                              BLOCKED
                             </span>
                           )}
                         </div>
@@ -870,8 +1028,13 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                             </span>
                           )}
                           {cand.product.availability && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-mono bg-navy-950/90 text-slate-300 border border-navy-700">
-                              {cand.product.availability}
+                            <span className={cn(
+                              "inline-flex items-center px-2 py-0.5 rounded text-[9px] font-mono font-bold border",
+                              cand.product.availability.toLowerCase().includes("out")
+                                ? "bg-rose-950/90 text-rose-300 border-rose-700"
+                                : "bg-emerald-950/90 text-emerald-300 border-emerald-700"
+                            )}>
+                              {cand.product.availability.toLowerCase().includes("out") ? "Out of Stock" : "In Stock"}
                             </span>
                           )}
                         </div>
@@ -892,6 +1055,37 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                           </p>
                         </div>
 
+                        {/* Hardware Specifications Chips */}
+                        {(cand.product.ram_gb || cand.product.storage_gb || cand.product.processor || cand.product.screen_size || cand.product.brand) && (
+                          <div className="flex flex-wrap gap-1.5 pt-0.5 text-[10px] font-mono">
+                            {cand.product.brand && (
+                              <span className="px-2 py-0.5 rounded bg-navy-950 border border-navy-700/80 text-slate-300 font-semibold">
+                                {cand.product.brand}
+                              </span>
+                            )}
+                            {cand.product.ram_gb && (
+                              <span className="px-2 py-0.5 rounded bg-navy-950 border border-emerald-500/30 text-emerald-300 font-semibold">
+                                {cand.product.ram_gb} GB RAM
+                              </span>
+                            )}
+                            {cand.product.storage_gb && (
+                              <span className="px-2 py-0.5 rounded bg-navy-950 border border-emerald-500/30 text-emerald-300 font-semibold">
+                                {cand.product.storage_gb} GB {cand.product.storage_type || 'Storage'}
+                              </span>
+                            )}
+                            {cand.product.processor && (
+                              <span className="px-2 py-0.5 rounded bg-navy-950 border border-sky-500/30 text-sky-300 font-semibold">
+                                {cand.product.processor}
+                              </span>
+                            )}
+                            {cand.product.screen_size && (
+                              <span className="px-2 py-0.5 rounded bg-navy-950 border border-navy-700/80 text-slate-400">
+                                {cand.product.screen_size}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
                         {/* Price & Budget Delta */}
                         <div className="p-3 rounded-xl bg-navy-950/80 border border-navy-800 flex items-center justify-between">
                           <div>
@@ -899,7 +1093,7 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                               Proposed Price
                             </span>
                             <span className="text-base font-bold font-mono text-white">
-                              {cand.product.currency} {cand.product.price.toFixed(2)}
+                              {formatCurrency(cand.product.price, cand.currency || cand.product.currency)}
                             </span>
                           </div>
 
@@ -914,8 +1108,8 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                               )}
                             >
                               {isUnderBudget
-                                ? `+${cand.product.currency} ${budgetDiff.toFixed(2)} under limit`
-                                : `-${cand.product.currency} ${Math.abs(budgetDiff).toFixed(2)} OVER BUDGET`}
+                                ? `+${formatCurrency(budgetDiff, cand.currency || cand.product.currency)} under limit`
+                                : `-${formatCurrency(Math.abs(budgetDiff), cand.currency || cand.product.currency)} OVER BUDGET`}
                             </span>
                           </div>
                         </div>
@@ -974,8 +1168,26 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                           </div>
                         )}
 
+                        {/* Unverified Specifications Notice if NEEDS_VERIFICATION */}
+                        {cand.status === 'NEEDS_VERIFICATION' && (
+                          <div className="p-2.5 rounded-lg bg-amber-950/50 border border-amber-500/30 text-amber-300 text-xs font-mono space-y-1">
+                            <div className="flex items-center gap-1.5 font-bold text-amber-400 text-[11px]">
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                              <span>Specifications Needing Verification:</span>
+                            </div>
+                            <ul className="list-disc list-inside space-y-0.5 text-[10px] text-amber-300/90">
+                              {(cand.unverified_reasons && cand.unverified_reasons.length > 0
+                                ? cand.unverified_reasons
+                                : ['Required hardware specifications (RAM/storage/processor) could not be confirmed in listing.']
+                              ).map((reason, i) => (
+                                <li key={i}>{reason}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
                         {/* Blocked Violations Notice if BLOCKED */}
-                        {!cand.approved && cand.policy_result.violations.length > 0 && (
+                        {cand.status === 'BLOCKED' && !cand.approved && cand.policy_result.violations.length > 0 && (
                           <div className="p-2.5 rounded-lg bg-rose-950/50 border border-rose-500/30 text-rose-300 text-xs font-mono space-y-1">
                             <div className="flex items-center gap-1.5 font-bold text-rose-400 text-[11px]">
                               <ShieldAlert className="w-3.5 h-3.5" />
@@ -1060,6 +1272,16 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                             </>
                           )}
                         </button>
+                      ) : cand.status === 'NEEDS_VERIFICATION' ? (
+                        <button
+                          type="button"
+                          disabled
+                          className="w-full py-2.5 px-4 rounded-xl bg-amber-950/60 border border-amber-500/40 text-amber-300 font-mono text-xs flex items-center justify-center gap-2 opacity-85 cursor-not-allowed"
+                          title="Cannot stage proposal: Hardware specifications could not be verified against mandate."
+                        >
+                          <Lock className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Selection Blocked: Specs Unverified</span>
+                        </button>
                       ) : (
                         <button
                           type="button"
@@ -1075,6 +1297,30 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Load More Candidates Button */}
+          {searchResponse.has_more && filteredCandidates.length > 0 && (
+            <div className="flex justify-center pt-4">
+              <button
+                type="button"
+                onClick={handleLoadMore}
+                disabled={isLoadingMore}
+                className="px-6 py-3 rounded-xl bg-navy-800 hover:bg-navy-700 text-white font-mono font-bold text-xs flex items-center gap-2 border border-navy-700 shadow-card-glow hover:border-emerald-500/50 transition-all disabled:opacity-50"
+              >
+                {isLoadingMore ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                    <span>Loading Next Page...</span>
+                  </>
+                ) : (
+                  <>
+                    <Layers className="w-4 h-4 text-emerald-400" />
+                    <span>Load More Candidate Products</span>
+                  </>
+                )}
+              </button>
             </div>
           )}
         </>
@@ -1147,19 +1393,19 @@ export const AgenticProposalFlow: React.FC<AgenticProposalFlowProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Proposed Total:</span>
                 <span className="text-emerald-300 font-bold text-sm">
-                  {selectedCandidate.currency} {selectedCandidate.product.price.toFixed(2)}
+                  {formatCurrency(selectedCandidate.product.price, selectedCandidate.currency || selectedCandidate.product.currency)}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Mandate Budget Cap:</span>
                 <span className="text-slate-300">
-                  {activeMandate.currency} {activeMandate.max_amount.toFixed(2)}
+                  {formatCurrency(activeMandate.max_amount, activeMandate.currency)}
                 </span>
               </div>
               <div className="flex items-center justify-between border-t border-navy-800 pt-2">
                 <span className="text-slate-400">Remaining Budget:</span>
                 <span className="text-emerald-400 font-bold">
-                  +{selectedCandidate.currency} {selectedCandidate.budget_remaining.toFixed(2)}
+                  +{formatCurrency(selectedCandidate.budget_remaining, selectedCandidate.currency || selectedCandidate.product.currency)}
                 </span>
               </div>
               {stagedProposal && (

@@ -89,6 +89,10 @@ async def search_proposals(payload: ProposalSearchRequest) -> ProposalSearchResp
             catalog_mode=payload.catalog_mode,
             marketplace_id=payload.marketplace_id,
             region=payload.region,
+            page=payload.page,
+            limit=payload.limit,
+            offset=payload.offset,
+            page_token=payload.page_token,
         )
         return response
     except Exception as exc:

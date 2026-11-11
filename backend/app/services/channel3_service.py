@@ -29,6 +29,7 @@ from app.models.marketplace import (
 )
 from app.models.proposal import DiscoveredProduct
 from app.services.marketplaces.base import MarketplaceAccessError
+from app.services.product_normalizer import product_normalizer
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,12 @@ class Channel3Service:
 
     def __init__(self):
         self._last_test_result: Optional[Dict[str, Any]] = None
+        self._last_next_page_token: Optional[str] = None
+
+    @property
+    def last_next_page_token(self) -> Optional[str]:
+        """Returns the continuation token from the most recent search."""
+        return self._last_next_page_token
 
     @property
     def is_configured(self) -> bool:
@@ -201,6 +208,7 @@ class Channel3Service:
         limit: int = 10,
         currency: str = "USD",
         region: Optional[str] = None,
+        page_token: Optional[str] = None,
     ) -> List[DiscoveredProduct]:
         """Performs live product search via Channel3 API and normalizes results into DiscoveredProduct schema.
 
@@ -220,8 +228,10 @@ class Channel3Service:
 
         payload: Dict[str, Any] = {
             "query": clean_query,
-            "limit": max(1, min(limit, 20)),
+            "limit": max(1, min(limit, 50)),
         }
+        if page_token:
+            payload["page_token"] = str(page_token).strip()
 
         try:
             async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS) as client:
@@ -252,6 +262,7 @@ class Channel3Service:
 
                 data = res.json()
                 raw_products = data.get("products", [])
+                self._last_next_page_token = data.get("next_page_token")
                 normalized_items: List[DiscoveredProduct] = []
 
                 for item in raw_products:
@@ -599,6 +610,31 @@ class Channel3Service:
             else:
                 is_verified = bool(domain and ((domain.lower() in known_verified_domains) or ("." in domain)))
 
+            # Extract rich key features and structured attributes from Channel3 payload
+            raw_kf = item.get("key_features") or []
+            key_features: List[str] = [str(k).strip() for k in raw_kf if k] if isinstance(raw_kf, list) else []
+            structured_attrs = item.get("structured_attributes") or item.get("attributes") or {}
+            if not isinstance(structured_attrs, dict):
+                structured_attrs = {}
+
+            # Specification normalization layer
+            specs = product_normalizer.normalize_specifications(
+                title=title,
+                description=description,
+                category=category,
+                raw_metadata={
+                    "brand": brand_name,
+                    "availability": availability,
+                    "retailer": domain or brand_name or "Channel3 Partner",
+                    "merchant_name": merchant_name,
+                    "key_features": key_features,
+                    "structured_attributes": structured_attrs,
+                    "structured_ram": structured_attrs.get("ram") or structured_attrs.get("memory"),
+                    "structured_storage": structured_attrs.get("storage-capacity") or structured_attrs.get("storage"),
+                    "structured_processor": structured_attrs.get("processor-family") or structured_attrs.get("processor"),
+                },
+            )
+
             return DiscoveredProduct(
                 product_id=f"ch3_{product_id}",
                 name=title,
@@ -618,8 +654,19 @@ class Channel3Service:
                 region="global",
                 data_freshness="Live Channel3 Universal Graph",
                 purchase_url=purchase_url,
-                availability=availability,
+                availability=specs["availability"],
                 retailer=domain or brand_name or "Channel3 Partner",
+                brand=specs["brand"],
+                model=specs["model"],
+                ram_gb=specs["ram_gb"],
+                storage_gb=specs["storage_gb"],
+                storage_type=specs["storage_type"],
+                processor=specs["processor"],
+                gpu=specs["gpu"],
+                screen_size=specs["screen_size"],
+                original_price=price_val,
+                original_currency=currency_code,
+                spec_verification_status=specs["spec_verification_status"],
             )
         except Exception as exc:
             logger.warning("Error normalizing Channel3 product: %s", exc)

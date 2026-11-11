@@ -43,19 +43,41 @@ class DiscoveredProduct(BaseModel):
     availability: Optional[str] = Field(default=None, description="Product inventory or stock status (e.g. InStock)")
     retailer: Optional[str] = Field(default=None, description="Retailer or domain hosting the listing")
 
+    # Normalized hardware and specification attributes
+    brand: Optional[str] = Field(default=None, description="Product brand name")
+    model: Optional[str] = Field(default=None, description="Product model identifier")
+    ram_gb: Optional[int] = Field(default=None, description="RAM size in GB")
+    storage_gb: Optional[int] = Field(default=None, description="Storage capacity in GB")
+    storage_type: Optional[str] = Field(default=None, description="Storage type (SSD, NVMe, eMMC, HDD)")
+    processor: Optional[str] = Field(default=None, description="Processor name/tier")
+    gpu: Optional[str] = Field(default=None, description="Graphics card or integrated GPU")
+    screen_size: Optional[str] = Field(default=None, description="Screen size in inches")
+    original_price: Optional[float] = Field(default=None, description="Original listing price before conversion")
+    original_currency: Optional[str] = Field(default=None, description="Original listing currency ISO code")
+    spec_verification_status: Optional[str] = Field(default="UNKNOWN", description="VERIFIED, UNVERIFIED, or UNKNOWN")
+    enrichment_status: Optional[str] = Field(default=None, description="ENRICHED, PARTIAL, or COMPLETE")
+
 
 class CandidateEvaluation(BaseModel):
     """Candidate product paired with its deterministic policy evaluation."""
     product: DiscoveredProduct
     policy_result: MandatePolicyEvaluationResponse
     approved: bool = Field(..., description="Whether the candidate passes all mandate rules")
-    status: str = Field(..., description="APPROVED or BLOCKED")
+    status: str = Field(..., description="APPROVED, NEEDS_VERIFICATION, or BLOCKED")
     budget_remaining: float = Field(..., description="Mandate max_amount minus candidate total")
     currency: str = Field(..., description="Candidate currency")
     can_select: bool = Field(..., description="True only if approved by policy engine")
     selection_blocked_reason: Optional[str] = Field(
         default=None,
         description="Explanation if candidate is unselectable due to policy violation",
+    )
+    unverified_reasons: Optional[List[str]] = Field(
+        default=None,
+        description="List of specific specs that could not be verified",
+    )
+    enrichment_status: Optional[str] = Field(
+        default=None,
+        description="Metadata enrichment status (ENRICHED, PARTIAL, NOT_NEEDED)",
     )
 
 
@@ -75,14 +97,27 @@ class ProposalSearchRequest(BaseModel):
         default=None,
         description="Selected region (e.g. amazon.in, amazon.com, demo_us, demo_in)",
     )
+    page: int = Field(default=1, ge=1, description="Page number for pagination")
+    limit: int = Field(default=10, ge=1, le=50, description="Results per page limit")
+    offset: int = Field(default=0, ge=0, description="Result offset")
+    page_token: Optional[str] = Field(default=None, description="Continuation token for provider pagination")
 
 
 class ProposalSearchResponse(BaseModel):
     """Response containing evaluated candidate proposals and catalog telemetry."""
+    query: str = Field(default="", description="The executed search query")
     candidates: List[CandidateEvaluation] = Field(default_factory=list)
-    compliant_count: int = Field(default=0, description="Number of policy-approved candidates")
+    discovered_count: int = Field(default=0, description="Total candidate items discovered from provider")
+    enriched_count: int = Field(default=0, description="Number of items enriched via metadata/detail queries")
+    eligible_count: int = Field(default=0, description="Number of fully eligible / approved candidates")
+    unverified_count: int = Field(default=0, description="Number of relevant candidates needing spec verification")
+    compliant_count: int = Field(default=0, description="Number of policy-approved candidates (alias to eligible_count)")
     blocked_count: int = Field(default=0, description="Number of policy-blocked candidates")
-    total_count: int = Field(default=0, description="Total candidates discovered")
+    total_count: int = Field(default=0, description="Total candidates in this response")
+    has_more: bool = Field(default=False, description="Whether more results exist on the provider")
+    page: int = Field(default=1, description="Current page number")
+    total_pages: int = Field(default=1, description="Total estimated pages available")
+    next_page_token: Optional[str] = Field(default=None, description="Continuation token for next page")
     catalog_mode: str = Field(default="demo", description="demo or external")
     data_source: str = Field(default="local_demo_fixture")
     is_demo_data: bool = Field(default=True)

@@ -181,6 +181,10 @@ export const api = {
     catalogMode?: 'demo' | 'external' | 'amazon';
     marketplaceId?: string;
     region?: string;
+    page?: number;
+    limit?: number;
+    offset?: number;
+    page_token?: string | null;
   }): Promise<ProposalSearchResponse> => {
     return await request<ProposalSearchResponse>('/proposals/search', {
       method: 'POST',
@@ -190,6 +194,10 @@ export const api = {
         catalog_mode: params.catalogMode || (params.marketplaceId === 'amazon' ? 'amazon' : 'demo'),
         marketplace_id: params.marketplaceId || (params.catalogMode === 'external' ? 'external' : 'demo'),
         region: params.region || (params.marketplaceId === 'channel3' ? 'global' : (params.mandate.currency.toUpperCase() === 'INR' ? 'demo_in' : 'demo_us')),
+        page: params.page ?? 1,
+        limit: params.limit ?? 10,
+        offset: params.offset ?? 0,
+        page_token: params.page_token ?? null,
       }),
     });
   },

@@ -21,8 +21,8 @@ interface DescribeYourPurchaseProps {
 
 const SAMPLE_PROMPTS = [
   {
-    label: 'New Laptop under ₹60,000 (INR)',
-    text: 'I need a new laptop under ₹60,000. Only buy from a verified seller. No refurbished products and no accessories.',
+    label: 'Brand New HP/Lenovo Laptop under ₹60,000 (16GB RAM / 512GB SSD)',
+    text: 'Find me a brand new HP or Lenovo laptop under ₹60,000 on Amazon India with at least 16GB RAM, 512GB SSD, Intel Core i5 or better, sold by a verified seller, in stock only. No refurbished, no accessories.',
   },
   {
     label: 'Mechanical Keyboard under $140 (USD)',
@@ -351,6 +351,61 @@ export const DescribeYourPurchase: React.FC<DescribeYourPurchaseProps> = ({
               </div>
             </label>
           </div>
+
+          {/* Hardware & Product Specifications Identified */}
+          {(editableMandate.min_ram_gb || editableMandate.min_storage_gb || editableMandate.processor_requirement || editableMandate.category || editableMandate.brand_preference || editableMandate.marketplace) && (
+            <div className="p-3.5 rounded-lg bg-navy-900/80 border border-navy-800 space-y-2">
+              <span className="text-[11px] font-mono text-emerald-400 uppercase tracking-wider block font-bold">
+                Deterministic Hardware & Policy Guardrails:
+              </span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                {editableMandate.category && (
+                  <div className="p-2 rounded bg-navy-950 border border-navy-800">
+                    <span className="text-slate-400 block text-[10px]">Category</span>
+                    <span className="font-semibold text-white">{editableMandate.category}</span>
+                  </div>
+                )}
+                {editableMandate.brand_preference && (
+                  <div className="p-2 rounded bg-navy-950 border border-navy-800">
+                    <span className="text-slate-400 block text-[10px]">Brand</span>
+                    <span className="font-semibold text-white">{editableMandate.brand_preference}</span>
+                  </div>
+                )}
+                {editableMandate.min_ram_gb && (
+                  <div className="p-2 rounded bg-navy-950 border border-navy-800">
+                    <span className="text-slate-400 block text-[10px]">Min RAM</span>
+                    <span className="font-semibold text-emerald-300 font-mono">{editableMandate.min_ram_gb} GB</span>
+                  </div>
+                )}
+                {editableMandate.min_storage_gb && (
+                  <div className="p-2 rounded bg-navy-950 border border-navy-800">
+                    <span className="text-slate-400 block text-[10px]">Min Storage</span>
+                    <span className="font-semibold text-emerald-300 font-mono">
+                      {editableMandate.min_storage_gb} GB {editableMandate.storage_type || ''}
+                    </span>
+                  </div>
+                )}
+                {editableMandate.processor_requirement && (
+                  <div className="p-2 rounded bg-navy-950 border border-navy-800">
+                    <span className="text-slate-400 block text-[10px]">Processor</span>
+                    <span className="font-semibold text-white">{editableMandate.processor_requirement}</span>
+                  </div>
+                )}
+                {editableMandate.marketplace && (
+                  <div className="p-2 rounded bg-navy-950 border border-navy-800">
+                    <span className="text-slate-400 block text-[10px]">Marketplace</span>
+                    <span className="font-semibold text-white">{editableMandate.marketplace}</span>
+                  </div>
+                )}
+                <div className="p-2 rounded bg-navy-950 border border-navy-800">
+                  <span className="text-slate-400 block text-[10px]">Availability</span>
+                  <span className="font-semibold text-emerald-400">
+                    {editableMandate.in_stock_required ? 'In-Stock Only' : 'Any'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* User Restrictions Tags */}
           {editableMandate.user_restrictions && editableMandate.user_restrictions.length > 0 && (

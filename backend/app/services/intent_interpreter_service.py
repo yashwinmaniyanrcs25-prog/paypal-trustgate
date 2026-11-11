@@ -30,9 +30,20 @@ OUTPUT JSON SCHEMA:
 {
   "max_amount": float or null,
   "currency": string (3-letter ISO code: "USD", "INR", "EUR", "GBP", etc.),
+  "category": string or null (e.g. "laptop", "keyboard", "mouse"),
+  "min_ram_gb": integer or null (e.g. 16, 8, 32),
+  "min_storage_gb": integer or null (e.g. 512, 256, 1024),
+  "storage_type": string or null (e.g. "SSD", "NVMe", "HDD"),
+  "processor_requirement": string or null (e.g. "Intel Core i5 or AMD Ryzen 5 or better"),
+  "gpu_requirement": string or null,
+  "display_size": string or null,
+  "brand_preference": string or null,
+  "model_preference": string or null,
+  "marketplace": string or null (e.g. "amazon.in", "amazon.com"),
   "allowed_conditions": list of strings (only "new", "used", "refurbished"),
   "require_merchant_verification": boolean,
   "allow_add_ons": boolean,
+  "in_stock_required": boolean,
   "user_restrictions": list of strings,
   "needs_clarification": boolean,
   "clarification_prompt": string or null,
@@ -52,26 +63,35 @@ RULES:
      "max_amount": null.
    - DO NOT INVENT A BUDGET IF THE USER DID NOT SPECIFY ONE.
 
-2. ALLOWED CONDITIONS:
-   - "new" -> ["new"]
+2. SPECIFICATIONS (for laptops & electronics):
+   - Extract min_ram_gb (e.g., "16GB RAM" -> 16, "at least 8GB" -> 8).
+   - Extract min_storage_gb (e.g., "512GB SSD" -> 512, "1TB" -> 1024).
+   - Extract storage_type (e.g., "SSD", "NVMe").
+   - Extract processor_requirement (e.g., "Intel Core i5 or AMD Ryzen 5 or better").
+   - Extract category (e.g., "laptop").
+   - Extract marketplace if specified (e.g. "Amazon India" -> "amazon.in", "Amazon US" -> "amazon.com").
+   - in_stock_required defaults to true.
+
+3. ALLOWED CONDITIONS:
+   - "new", "brand-new" -> ["new"]
    - "no refurbished" -> ["new"]
    - "used or refurbished" -> ["used", "refurbished"]
    - If no condition is mentioned, default to ["new"].
 
-3. MERCHANT VERIFICATION:
+4. MERCHANT VERIFICATION:
    - If user asks for "verified seller", "only verified merchant", "official store", set require_merchant_verification: true.
    - Default is true for security.
 
-4. ADD-ONS & ACCESSORIES:
-   - "no accessories", "no add-ons", "no bundle items", "without warranty upsells" -> allow_add_ons: false.
+5. ADD-ONS & ACCESSORIES:
+   - "no accessories", "no add-ons", "no bundle items", "without warranty upsells", "no extended warranties or subscriptions" -> allow_add_ons: false.
    - If user explicitly permits add-ons -> allow_add_ons: true.
    - Default is false.
 
-5. USER RESTRICTIONS:
-   - Extract key constraints explicitly mentioned by user (e.g. "laptop only", "no accessories", "verified seller only").
+6. USER RESTRICTIONS:
+   - Extract key constraints explicitly mentioned by user (e.g. "new laptop only", "Amazon India only", "min 16GB RAM", "verified seller only").
    - DO NOT invent constraints the user did not specify.
 
-6. ABSOLUTE SECURITY INVARIANT:
+7. ABSOLUTE SECURITY INVARIANT:
    - Output ONLY structured intent bounds. You have zero payment execution authority.
 
 Return strictly valid JSON matching the schema above.
@@ -264,6 +284,13 @@ class IntentInterpreterService:
             currency_code = raw_currency if len(raw_currency) == 3 else "USD"
 
         try:
+            # Parse integer specifications safely
+            raw_ram = parsed_data.get("min_ram_gb")
+            min_ram_gb = int(raw_ram) if raw_ram is not None and str(raw_ram).isdigit() else None
+
+            raw_storage = parsed_data.get("min_storage_gb")
+            min_storage_gb = int(raw_storage) if raw_storage is not None and str(raw_storage).isdigit() else None
+
             mandate = PurchaseMandate(
                 max_amount=float(max_amount),
                 currency=currency_code,
@@ -273,6 +300,17 @@ class IntentInterpreterService:
                 ),
                 allow_add_ons=bool(parsed_data.get("allow_add_ons", False)),
                 user_restrictions=parsed_data.get("user_restrictions", []),
+                category=parsed_data.get("category"),
+                min_ram_gb=min_ram_gb,
+                min_storage_gb=min_storage_gb,
+                storage_type=parsed_data.get("storage_type"),
+                processor_requirement=parsed_data.get("processor_requirement"),
+                gpu_requirement=parsed_data.get("gpu_requirement"),
+                display_size=parsed_data.get("display_size"),
+                brand_preference=parsed_data.get("brand_preference"),
+                model_preference=parsed_data.get("model_preference"),
+                marketplace=parsed_data.get("marketplace"),
+                in_stock_required=bool(parsed_data.get("in_stock_required", True)),
             )
         except Exception as val_err:
             logger.error("Failed to construct PurchaseMandate from output: %s", str(val_err))

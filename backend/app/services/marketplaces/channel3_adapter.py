@@ -33,12 +33,20 @@ class Channel3Adapter(BaseMarketplaceAdapter):
     def supported_regions(self) -> List[MarketplaceRegion]:
         return SUPPORTED_CHANNEL3_REGIONS
 
+    @property
+    def next_page_token(self) -> Optional[str]:
+        return channel3_service.last_next_page_token
+
     def get_integration_status(self, region: Optional[str] = None) -> MarketplaceStatusResponse:
         """Inspects backend configuration and returns authentic integration status."""
         return channel3_service.get_integration_status()
 
     async def search_products(
-        self, query: str, region: str = "global", limit: int = 10
+        self,
+        query: str,
+        region: str = "global",
+        limit: int = 10,
+        page_token: Optional[str] = None,
     ) -> List[DiscoveredProduct]:
         """Queries Channel3 API for candidate products.
 
@@ -50,6 +58,7 @@ class Channel3Adapter(BaseMarketplaceAdapter):
             limit=limit,
             currency=currency,
             region=region,
+            page_token=page_token,
         )
 
     async def get_product_details(
